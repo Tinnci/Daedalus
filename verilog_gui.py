@@ -6,6 +6,7 @@ import subprocess
 import os
 import json
 import shlex # Import shlex for safe command string splitting
+import re # NEW: Import re for regular expressions
 
 # For syntax highlighting
 from pygments import highlight
@@ -30,18 +31,30 @@ class VerilogGUI:
         # Set protocol for window closing
         self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-        # Initialize Notebook and main console tab (Moved before create_widgets)
-        self.notebook = ttk.Notebook(self.master)
-        self.notebook.pack(expand=True, fill="both", padx=5, pady=5)
+        # --- NEW: PanedWindow for left/right layout ---
+        self.main_paned_window = ttk.PanedWindow(self.master, orient=tk.HORIZONTAL)
+        self.main_paned_window.pack(expand=True, fill="both", padx=5, pady=5)
 
-        self.console_frame = ttk.Frame(self.notebook) # This will hold all existing widgets
+        # Left pane for Hierarchy Viewer
+        self.hierarchy_frame = ttk.LabelFrame(self.main_paned_window, text="设计层次")
+        self.main_paned_window.add(self.hierarchy_frame, weight=1) # Give it some weight to expand
+
+        # Right pane for Notebook (Console + Editors)
+        # Move self.notebook creation into the right pane
+        self.notebook = ttk.Notebook(self.main_paned_window) # Now a child of main_paned_window
+        self.main_paned_window.add(self.notebook, weight=3) # Give it more weight
+
+        self.console_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.console_frame, text="控制台")
 
-        # Dictionary to keep track of opened editor tabs: {file_path: scrolledtext_widget}
+        # Dictionary to keep track of opened editor tabs: {file_path: (tab_frame, text_widget)}
         self.open_editors = {}
 
         # --- GUI Elements ---
         self.create_widgets()
+
+        # --- NEW: Create hierarchy viewer specific widgets and initial build ---
+        self._create_hierarchy_viewer_widgets()
 
         # Define Pygments token type to Tkinter tag name and color mapping
         # These tags will be configured on each editor's ScrolledText widget
@@ -162,8 +175,8 @@ class VerilogGUI:
         file_menu.add_command(label="Open Project...", command=self.open_project)
         file_menu.add_command(label="Save", command=self.save_current_file)
         file_menu.add_command(label="Save Project As...", command=self.save_project_as)
-        file_menu.add_command(label="Close Current Tab", command=self.close_current_tab)
         file_menu.add_separator()
+        file_menu.add_command(label="Close Current Tab", command=self.close_current_tab)
         file_menu.add_command(label="New Project", command=self.new_project)
         file_menu.add_command(label="Exit", command=self.master.quit)
 
@@ -340,6 +353,8 @@ class VerilogGUI:
                 self.verilog_files.append(f)
                 # Display only the basename in the Treeview
                 self.file_listbox.insert("", "end", values=(os.path.basename(f),))
+        if files: # Only update if files were actually added
+            self._build_hierarchy_viewer() # NEW: Update hierarchy after adding files
 
     def remove_verilog_files(self):
         selected_items = self.file_listbox.selection()
@@ -358,6 +373,8 @@ class VerilogGUI:
             
             # Remove from Treeview
             self.file_listbox.delete(item)
+        if selected_items: # Only update if files were actually removed
+            self._build_hierarchy_viewer() # NEW: Update hierarchy after removing files
 
     def move_file_up(self):
         selected_items = self.file_listbox.selection()
@@ -476,6 +493,7 @@ class VerilogGUI:
                 self.file_listbox.insert("", "end", values=(os.path.basename(f),))
             
             messagebox.showinfo("项目加载", f"项目 '{os.path.basename(project_file)}' 加载成功！")
+            self._build_hierarchy_viewer() # NEW: Update hierarchy after loading project
 
         except Exception as e:
             messagebox.showerror("错误", f"加载项目失败: {e}")
@@ -651,6 +669,7 @@ class VerilogGUI:
         context_menu.add_command(label="粘贴", command=lambda: text_widget.event_generate("<<Paste>>"))
         context_menu.add_separator()
         context_menu.add_command(label="全选", command=lambda: text_widget.event_generate("<<SelectAll>>"))
+        context_menu.add_separator() # Add separator before Close Tab
         context_menu.add_command(label="关闭当前标签页", command=lambda: self.close_tab_by_widget(text_widget)) # Add close tab to context menu
 
         def show_context_menu(event):
@@ -1022,6 +1041,245 @@ end
         if file_to_close and frame_to_close:
             self.notebook.forget(frame_to_close) # 从 Notebook 中移除标签页
             del self.open_editors[file_to_close] # 从我们的追踪字典中删除
+
+    def _parse_verilog_files(self):
+        """
+        Parses all Verilog files to build a model of the design hierarchy.
+        This version uses a state machine approach for better accuracy.
+        """
+        # Regex for module definition (captures module name)
+        module_re = re.compile(r"^\s*module\s+([a-zA-Z_][\w]*)", re.MULTILINE)
+        # Regex for instance (captures module type and instance name)
+        instance_re = re.compile(r"^\s*([a-zA-Z_][\w]*)\s+(?:#\s*\(.*\)\s*)?([a-zA-Z_][\w]*)\s*\(", re.MULTILINE)
+        # Regex for endmodule
+        endmodule_re = re.compile(r"^\s*endmodule", re.MULTILINE)
+
+        # Data structures to hold parsed information
+        self.design_modules = {} # We'll store this on self for later use (e.g., jump to definition)
+        all_instance_types = set()
+        
+        for file_path in self.verilog_files:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                lines = content.splitlines()
+                current_module_name = None
+                
+                for i, line in enumerate(lines):
+                    if current_module_name is None:
+                        # Not inside a module, look for a new module definition
+                        match = module_re.match(line)
+                        if match:
+                            current_module_name = match.group(1)
+                            if current_module_name not in self.design_modules:
+                                self.design_modules[current_module_name] = {
+                                    "file_path": file_path,
+                                    "definition_line": i + 1, # Line numbers are 1-based
+                                    "instances": []
+                                }
+                    else:
+                        # We are inside a module definition
+                        # Look for instances
+                        inst_match = instance_re.match(line)
+                        if inst_match:
+                            inst_type, inst_name = inst_match.groups()
+                            
+                            # A simple check to avoid keywords
+                            if inst_type and inst_type.lower() not in ["input", "output", "inout", "reg", "wire", "always", "initial", "assign", "parameter", "localparam", "function", "task"]:
+                                self.design_modules[current_module_name]["instances"].append({
+                                    "type": inst_type,
+                                    "name": inst_name,
+                                    "file_path": file_path, # Instance is in the file of the current module
+                                    "line": i + 1
+                                })
+                                all_instance_types.add(inst_type)
+                        
+                        # Look for the end of the module
+                        elif endmodule_re.match(line):
+                            current_module_name = None # We have exited the module scope
+
+            except Exception as e:
+                self.output_log_widget.insert(tk.END, f"Warning: 解析文件 {os.path.basename(file_path)} 失败: {e}\n", "WARNING")
+
+        return self.design_modules, all_instance_types
+
+    def _create_hierarchy_viewer_widgets(self):
+        """Creates the Treeview and its scrollbars for the hierarchy viewer."""
+        self.hierarchy_tree = ttk.Treeview(self.hierarchy_frame, columns=("Type", "Location"), show="tree headings")
+        self.hierarchy_tree.heading("#0", text="名称") # Main column
+        self.hierarchy_tree.heading("Type", text="类型")
+        self.hierarchy_tree.heading("Location", text="文件")
+        self.hierarchy_tree.pack(expand=True, fill="both")
+
+        # Add scrollbars
+        h_scrollbar = ttk.Scrollbar(self.hierarchy_frame, orient="horizontal", command=self.hierarchy_tree.xview)
+        v_scrollbar = ttk.Scrollbar(self.hierarchy_frame, orient="vertical", command=self.hierarchy_tree.yview)
+        self.hierarchy_tree.configure(xscrollcommand=h_scrollbar.set, yscrollcommand=v_scrollbar.set)
+        h_scrollbar.pack(side=tk.BOTTOM, fill="x")
+        v_scrollbar.pack(side=tk.RIGHT, fill="y")
+
+        # Bind selection event to jump to code
+        self.hierarchy_tree.bind("<<TreeviewSelect>>", self._on_hierarchy_select) # NEW: Bind selection event
+
+        # Initial build of hierarchy
+        self._build_hierarchy_viewer()
+
+    def _build_hierarchy_viewer(self):
+        """Builds the design hierarchy in the Treeview using parsed data."""
+        # Clear existing items
+        self.hierarchy_tree.delete(*self.hierarchy_tree.get_children())
+        
+        if not self.verilog_files:
+            # Optionally show a message if no files are added
+            # self.hierarchy_tree.insert("", "end", text="请添加Verilog文件以查看层次", values=("", ""), open=False)
+            return
+
+        # 1. Parse all files to get the design structure
+        modules, all_instance_types = self._parse_verilog_files()
+        
+        # 2. Find top-level modules (those that are defined but never instantiated as a component)
+        # A module is top-level if it's defined but not in the set of all instantiated module types.
+        top_level_modules = set(modules.keys()) - all_instance_types
+        
+        # If no explicit top-level modules are found (e.g., all modules instantiate each other in a cycle, or only one module),
+        # consider all defined modules as top-level for display purposes.
+        if not top_level_modules and modules:
+            top_level_modules = set(modules.keys())
+            self.output_log_widget.insert(tk.END, "提示: 未检测到明确的顶层模块，将显示所有已定义的模块。\n", "WARNING")
+
+
+        # 3. Build the tree recursively for each top-level module
+        for top_module_name in sorted(list(top_level_modules)):
+            module_details = modules.get(top_module_name)
+            if module_details: # Ensure the module actually exists in our parsed data
+                self._populate_tree_recursive(
+                    parent_node_id="",
+                    module_name=top_module_name,
+                    instance_name=top_module_name, # For top-level, the instance name is effectively its own module name
+                    all_modules=modules,
+                    # For top-level modules, their 'instance_info' is their own definition details
+                    instance_info={"file_path": module_details["file_path"], "line": module_details["definition_line"]}
+                )
+
+    def _populate_tree_recursive(self, parent_node_id, module_name, instance_name, all_modules, instance_info=None):
+        """Recursively populates the hierarchy Treeview.
+        Stores file_path and line_number in item values for navigation.
+        """
+        module_details = all_modules.get(module_name)
+        
+        file_path = ""
+        line_num = 0
+        item_type = ""
+
+        if instance_info: # This is an instance (or top-level module passed as instance_info)
+            file_path = instance_info["file_path"]
+            line_num = instance_info["line"]
+            item_type = "实例" if parent_node_id else "模块" # Distinguish top-level module vs actual instance
+        elif module_details: # Fallback (should primarily be handled by instance_info for top-level)
+            file_path = module_details["file_path"]
+            line_num = module_details["definition_line"]
+            item_type = "模块"
+        else: # Undefined module (no details found for module_name)
+            file_path, line_num, item_type = "-", 0, "未定义"
+
+        # Determine display text based on whether it's a top-level module or an instance
+        display_text = f"模块: {module_name}" if parent_node_id == "" else f"实例: {instance_name} (类型: {module_name})"
+        
+        # Insert the item into the tree
+        # Store (Type, BaseFilename, FullPath, LineNumber) in values
+        current_node_id = self.hierarchy_tree.insert(
+            parent_node_id, 
+            "end", 
+            text=display_text,
+            values=(item_type, os.path.basename(file_path), file_path, line_num), # NEW: Store full path and line number
+            open=True # Keep nodes open by default
+        )
+        
+        if not module_details:
+            # If an instance points to an undefined module, show it as such
+            # And do not recurse further
+            self.hierarchy_tree.set(current_node_id, "Type", "未定义")
+            self.hierarchy_tree.set(current_node_id, "File", "-") # Set the 'File' column to '-' for undefined
+            return
+
+        # Now, find all instances within this module and recurse
+        for instance in module_details["instances"]:
+            # Ensure the instance's type exists before recursing to prevent errors
+            if instance["type"] in all_modules:
+                self._populate_tree_recursive(
+                    parent_node_id=current_node_id,
+                    module_name=instance["type"],
+                    instance_name=instance["name"],
+                    all_modules=all_modules,
+                    instance_info=instance # Pass instance info down (which includes its file_path and line)
+                )
+            else:
+                # If an instance type is not defined in project files, add a placeholder
+                self.hierarchy_tree.insert(
+                    current_node_id, 
+                    "end", 
+                    text=f"实例: {instance['name']} (类型: {instance['type']})",
+                    values=("未定义实例", os.path.basename(instance["file_path"]), instance["file_path"], instance["line"])
+                )
+
+    def _on_hierarchy_select(self, event):
+        """Handles selection event in the hierarchy Treeview to open file and jump to line."""
+        selected_item_id = self.hierarchy_tree.focus() # Get the ID of the focused/selected item
+        if not selected_item_id:
+            return
+
+        item_values = self.hierarchy_tree.item(selected_item_id, "values")
+        # item_values will contain (Type, BaseFilename, FullPath, LineNumber)
+        
+        # Check if this item is an "Undefined" node, which shouldn't be clickable for navigation
+        if item_values and (item_values[0] == "未定义" or item_values[0] == "未定义实例"):
+            return
+
+        if len(item_values) >= 4:
+            # item_type = item_values[0] # Not used for navigation itself
+            # base_filename = item_values[1] # Not used for navigation itself
+            full_file_path = item_values[2]
+            line_num = int(item_values[3])
+
+            if not os.path.exists(full_file_path):
+                messagebox.showerror("文件不存在", f"文件 '{os.path.basename(full_file_path)}' 未找到。")
+                return
+            
+            # Open the file in an editor tab (re-using existing logic)
+            if full_file_path in self.open_editors:
+                tab_frame, text_widget = self.open_editors[full_file_path]
+                self.notebook.select(tab_frame) # Switch to existing tab
+            else:
+                tab_data = self.create_editor_tab(full_file_path)
+                if tab_data:
+                    tab_frame, text_widget = tab_data
+                    self.notebook.add(tab_frame, text=os.path.basename(full_file_path)) # Use basename for tab text
+                    self.notebook.select(tab_frame)
+                    self.open_editors[full_file_path] = (tab_frame, text_widget)
+                else:
+                    return # Failed to open editor
+
+            # Jump to the specific line number in the editor
+            try:
+                # Tkinter text widget lines are 1-based, just like our line_num
+                # First, ensure the line is visible
+                text_widget.see(f"{line_num}.0") 
+                # Then, place the cursor at the beginning of the line
+                text_widget.mark_set(tk.INSERT, f"{line_num}.0")
+                # Highlight the line temporarily
+                text_widget.tag_remove("highlight_line", "1.0", tk.END) # Clear previous highlight
+                text_widget.tag_add("highlight_line", f"{line_num}.0", f"{line_num}.end")
+                text_widget.tag_config("highlight_line", background="lightblue")
+                text_widget.after(1000, lambda: text_widget.tag_remove("highlight_line", "1.0", tk.END)) # Remove highlight after 1 second
+
+            except Exception as e:
+                self.output_log_widget.insert(tk.END, f"无法跳转到行 {line_num} 在文件 {os.path.basename(full_file_path)} 中: {e}\n", "ERROR")
+                print(f"Error jumping to line {line_num} in {os.path.basename(full_file_path)}: {e}")
+        else:
+            # This branch indicates an item in the Treeview has insufficient data,
+            # which should ideally not happen if populate_tree_recursive sets values correctly.
+            print(f"Warning: Treeview item {selected_item_id} has insufficient values for navigation: {item_values}")
 
 if __name__ == "__main__":
     root = tk.Tk()
