@@ -160,7 +160,9 @@ class VerilogGUI:
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File", menu=file_menu)
         file_menu.add_command(label="Open Project...", command=self.open_project)
+        file_menu.add_command(label="Save", command=self.save_current_file)
         file_menu.add_command(label="Save Project As...", command=self.save_project_as)
+        file_menu.add_command(label="Close Current Tab", command=self.close_current_tab)
         file_menu.add_separator()
         file_menu.add_command(label="New Project", command=self.new_project)
         file_menu.add_command(label="Exit", command=self.master.quit)
@@ -503,7 +505,9 @@ class VerilogGUI:
     def new_project(self):
         """清空当前项目设置，开始一个新项目"""
         self.verilog_files = []
-        self.file_listbox.delete(0, tk.END)
+        # Clear and repopulate Treeview (corrected for ttk.Treeview)
+        for item in self.file_listbox.get_children():
+            self.file_listbox.delete(item)
         self.vvp_output_entry.delete(0, tk.END)
         self.vvp_output_entry.insert(0, "design.vvp")
         self.vcd_output_entry.delete(0, tk.END)
@@ -542,7 +546,27 @@ class VerilogGUI:
             print(f"保存窗口状态失败: {e}")
 
     def on_closing(self):
-        """窗口关闭时的回调函数，用于保存状态并退出"""
+        """窗口关闭时的回调函数，检查未保存的文件，保存状态并退出"""
+        unsaved_files = []
+        for file_path, (tab_frame, text_widget) in self.open_editors.items():
+            if text_widget.edit_modified():
+                unsaved_files.append(os.path.basename(file_path))
+
+        if unsaved_files:
+            file_list_str = "\n - ".join(unsaved_files)
+            message = f"您有以下文件尚未保存:\n\n - {file_list_str}\n\n您想在退出前保存它们吗？"
+            
+            user_choice = messagebox.askyesnocancel("退出前保存?", message)
+
+            if user_choice is True: # User chose "Yes"
+                for file_path, (tab_frame, text_widget) in self.open_editors.items():
+                    if text_widget.edit_modified():
+                        self.save_current_file(file_path, text_widget) # Call the new save method
+                
+            elif user_choice is None: # User chose "Cancel"
+                return # Abort the closing process
+
+        # If user chose "No", we just proceed to close.
         self.save_window_state()
         self.master.destroy()
 
@@ -603,28 +627,46 @@ class VerilogGUI:
             text_widget.edit_modified(False) # Reset modified flag after loading
             self._apply_syntax_highlighting(text_widget) # Apply initial highlighting
             self._update_line_numbers(text_widget, self.linenumbers) # Initial line number update
+            self._check_editor_modified_status(text_widget, file_path) # Initial status check
         except Exception as e:
             messagebox.showerror("错误", f"无法打开文件 {os.path.basename(file_path)}: {e}")
             editor_frame.destroy() # Clean up the frame if opening fails
             return None # Indicate failure
 
         # Bind key release event for real-time highlighting and line numbers
-        text_widget.bind("<KeyRelease>", lambda event, tw=text_widget, ln=self.linenumbers: self._handle_editor_content_change(event, tw, ln))
-        text_widget.bind("<Configure>", lambda event, tw=text_widget, ln=self.linenumbers: self._update_line_numbers(tw, ln))
-        text_widget.bind("<MouseWheel>", lambda event, tw=text_widget, ln=self.linenumbers: self._update_line_numbers(tw, ln))
-        text_widget.bind("<Button-4>", lambda event, tw=text_widget, ln=self.linenumbers: self._update_line_numbers(tw, ln)) # For Linux scroll up
-        text_widget.bind("<Button-5>", lambda event, tw=text_widget, ln=self.linenumbers: self._update_line_numbers(tw, ln)) # For Linux scroll down
+        text_widget.bind("<KeyRelease>", lambda event, tw=text_widget, ln=self.linenumbers, fp=file_path: self._handle_editor_content_change(event, tw, ln, fp))
+        text_widget.bind("<Configure>", lambda event, tw=text_widget, ln=self.linenumbers, fp=file_path: self._update_line_numbers(tw, ln)) # Configure also updates line numbers
+        text_widget.bind("<MouseWheel>", lambda event, tw=text_widget, ln=self.linenumbers, fp=file_path: self._update_line_numbers(tw, ln))
+        text_widget.bind("<Button-4>", lambda event, tw=text_widget, ln=self.linenumbers, fp=file_path: self._update_line_numbers(tw, ln)) # For Linux scroll up
+        text_widget.bind("<Button-5>", lambda event, tw=text_widget, ln=self.linenumbers, fp=file_path: self._update_line_numbers(tw, ln)) # For Linux scroll down
+        text_widget.bind("<<Modified>>", lambda event, tw=text_widget, fp=file_path: self._check_editor_modified_status(tw, fp)) # Bind to the <<Modified>> event
 
         # Link text widget scroll to line numbers scroll
         text_widget.config(yscrollcommand=lambda *args: self._on_text_scroll(text_widget, self.linenumbers, *args))
 
+        # Create a context menu for the editor
+        context_menu = tk.Menu(text_widget, tearoff=0)
+        context_menu.add_command(label="剪切", command=lambda: text_widget.event_generate("<<Cut>>"))
+        context_menu.add_command(label="复制", command=lambda: text_widget.event_generate("<<Copy>>"))
+        context_menu.add_command(label="粘贴", command=lambda: text_widget.event_generate("<<Paste>>"))
+        context_menu.add_separator()
+        context_menu.add_command(label="全选", command=lambda: text_widget.event_generate("<<SelectAll>>"))
+        context_menu.add_command(label="关闭当前标签页", command=lambda: self.close_tab_by_widget(text_widget)) # Add close tab to context menu
+
+        def show_context_menu(event):
+            context_menu.tk_popup(event.x_root, event.y_root)
+
+        text_widget.bind("<Button-3>", show_context_menu) # Bind right-click
+
         return editor_frame, text_widget # Return both the frame and the text widget
 
-    def _handle_editor_content_change(self, event, text_widget, linenumbers_canvas):
+    def _handle_editor_content_change(self, event, text_widget, linenumbers_canvas, file_path):
         # Call syntax highlighting
         self._apply_syntax_highlighting(text_widget)
         # Call line number update
         self._update_line_numbers(text_widget, linenumbers_canvas)
+        # Call modified status check
+        self._check_editor_modified_status(text_widget, file_path)
 
     def _on_text_scroll(self, text_widget, linenumbers_canvas, *args):
         text_widget.yview(*args) # Apply scroll to text widget
@@ -633,11 +675,10 @@ class VerilogGUI:
     def _update_line_numbers(self, text_widget, linenumbers_canvas):
         linenumbers_canvas.delete("all")
 
-        i = 1
         # Get the first visible line number
         first_visible_line = int(text_widget.index("@0,0").split(".")[0])
         # Get the last visible line number by checking the yview
-        last_visible_line = int(text_widget.index("@0,%s" % linenumbers_canvas.winfo_height()).split(".")[0]) + 1 # +1 to ensure last line is checked
+        last_visible_line = int(text_widget.index(f"@0,{linenumbers_canvas.winfo_height()}").split(".")[0]) + 1 # +1 to ensure last line is checked
 
         for line_number in range(first_visible_line, last_visible_line):
             dline = text_widget.dlineinfo(f"{line_number}.0")
@@ -647,10 +688,28 @@ class VerilogGUI:
             y = dline[1] # Y-coordinate of the line
             linenumbers_canvas.create_text(2, y, anchor="nw", text=str(line_number), fill="gray")
 
+    def _check_editor_modified_status(self, text_widget, file_path):
+        is_modified = text_widget.edit_modified()
+        file_basename = os.path.basename(file_path)
+
+        # Find the tab associated with this file_path
+        tab_index = -1
+        for i, (f_path, (tab_frame, _)) in enumerate(self.open_editors.items()):
+            if f_path == file_path:
+                tab_index = self.notebook.index(tab_frame)
+                break
+        
+        if tab_index != -1:
+            current_tab_text = self.notebook.tab(tab_index, "text")
+            expected_tab_text = file_basename + "*" if is_modified else file_basename
+
+            if current_tab_text != expected_tab_text:
+                self.notebook.tab(tab_index, text=expected_tab_text)
+
     def _apply_syntax_highlighting(self, text_widget):
         # Clear all existing tags
         for tag_name in text_widget.tag_names():
-            if tag_name not in ("sel", "error", "warning", "cmd"): # Exclude built-in selection and my log tags
+            if tag_name not in ("sel", "error", "warning", "cmd", "match"): # Exclude built-in selection and my log/find tags
                 text_widget.tag_remove(tag_name, "1.0", tk.END)
 
         content = text_widget.get("1.0", tk.END + "-1c") # Get all text, excluding the final newline
@@ -902,6 +961,67 @@ end
             current_text_widget.insert(tk.INSERT, template_content)
         else:
             messagebox.showerror("错误", "未知模板类型。")
+
+    def save_current_file(self, file_path=None, text_widget=None):
+        """保存当前激活编辑器或指定编辑器的内容。"""
+        if text_widget is None:
+            # If no widget is provided, try to get the currently active one
+            current_text_widget = self._get_current_editor_widget()
+            if not current_text_widget:
+                messagebox.showinfo("提示", "请先打开一个文件进行保存。")
+                return
+            
+            # Find the file_path associated with this widget
+            for f_path, (tab_frame, tw) in self.open_editors.items():
+                if tw == current_text_widget:
+                    file_path = f_path
+                    text_widget = tw
+                    break
+            
+            if file_path is None:
+                messagebox.showerror("错误", "无法找到当前编辑器的文件路径。")
+                return
+
+        try:
+            content = text_widget.get("1.0", tk.END + "-1c") # Get all text, excluding the final newline
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            text_widget.edit_modified(False) # Reset modified flag
+            self._check_editor_modified_status(text_widget, file_path) # Update tab title (remove asterisk)
+            self.output_log_widget.insert(tk.END, f"\n文件已保存: {os.path.basename(file_path)}\n")
+        except Exception as e:
+            messagebox.showerror("保存失败", f"无法保存文件 {os.path.basename(file_path)}: {e}")
+
+    def close_current_tab(self):
+        """关闭当前激活的编辑器标签页。"""
+        current_text_widget = self._get_current_editor_widget()
+        if current_text_widget:
+            self.close_tab_by_widget(current_text_widget)
+        else:
+            messagebox.showinfo("提示", "当前没有活动的编辑器标签页可以关闭。")
+
+    def close_tab_by_widget(self, text_widget_to_close):
+        """查找并关闭与给定文本控件关联的标签页。"""
+        file_to_close = None
+        frame_to_close = None
+
+        for f_path, (tab_frame, text_widget) in self.open_editors.items():
+            if text_widget == text_widget_to_close:
+                # 首先，检查文件是否已修改
+                if text_widget.edit_modified():
+                    response = messagebox.askyesnocancel("保存更改?", f"文件 {os.path.basename(f_path)} 已被修改。是否要保存？")
+                    if response is True: # 用户选择"是"
+                        self.save_current_file(f_path, text_widget)
+                    elif response is None: # 用户选择"取消"
+                        return # 中止关闭操作
+
+                file_to_close = f_path
+                frame_to_close = tab_frame
+                break
+        
+        if file_to_close and frame_to_close:
+            self.notebook.forget(frame_to_close) # 从 Notebook 中移除标签页
+            del self.open_editors[file_to_close] # 从我们的追踪字典中删除
 
 if __name__ == "__main__":
     root = tk.Tk()
