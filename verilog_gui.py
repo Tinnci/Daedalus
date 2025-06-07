@@ -7,6 +7,12 @@ import os
 import json
 import shlex # Import shlex for safe command string splitting
 
+# For syntax highlighting
+from pygments import highlight
+from pygments.lexers import VerilogLexer
+from pygments.formatters import TerminalFormatter # We will use this to get style info
+from pygments.token import Token
+
 class VerilogGUI:
     def __init__(self, master):
         self.master = master
@@ -24,21 +30,53 @@ class VerilogGUI:
         # Set protocol for window closing
         self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
+        # Initialize Notebook and main console tab (Moved before create_widgets)
+        self.notebook = ttk.Notebook(self.master)
+        self.notebook.pack(expand=True, fill="both", padx=5, pady=5)
+
+        self.console_frame = ttk.Frame(self.notebook) # This will hold all existing widgets
+        self.notebook.add(self.console_frame, text="控制台")
+
+        # Dictionary to keep track of opened editor tabs: {file_path: scrolledtext_widget}
+        self.open_editors = {}
+
         # --- GUI Elements ---
         self.create_widgets()
+
+        # Define Pygments token type to Tkinter tag name and color mapping
+        # These tags will be configured on each editor's ScrolledText widget
+        self.pygments_tag_styles = {
+            Token.Keyword: {"tag": "keyword", "foreground": "blue"},
+            Token.Comment: {"tag": "comment", "foreground": "green"},
+            Token.String: {"tag": "string", "foreground": "#a31515"}, # Dark red for strings
+            Token.Literal.Number: {"tag": "number", "foreground": "#000080"}, # Navy for numbers
+            Token.Name.Builtin: {"tag": "builtin", "foreground": "#800080"}, # Purple for built-ins
+            Token.Operator: {"tag": "operator", "foreground": "#808000"}, # Olive for operators
+            Token.Punctuation: {"tag": "punctuation", "foreground": "#808080"}, # Grey for punctuation
+            Token.Name.Other: {"tag": "plain", "foreground": "black"}, # Default text color
+            Token.Error: {"tag": "error", "foreground": "white", "background": "red"}, # Error style
+            # Add more specific tokens as needed for Verilog
+            Token.Name.Variable: {"tag": "variable", "foreground": "#008080"}, # Teal for variables
+            Token.Name.Function: {"tag": "function", "foreground": "#CC0000"}, # Darker red for functions
+            Token.Name.Class: {"tag": "class", "foreground": "#0000FF"}, # Blue for classes
+            Token.Text: {"tag": "text", "foreground": "black"}, # Fallback for plain text
+        }
 
         # --- Environment Check on startup ---
         self.check_dependencies()
 
     def create_widgets(self):
         # Frame for file selection
-        file_frame = ttk.LabelFrame(self.master, text="Verilog Source Files")
+        file_frame = ttk.LabelFrame(self.console_frame, text="Verilog Source Files")
         file_frame.pack(fill="x")
 
         # Use Treeview for file list
         self.file_listbox = ttk.Treeview(file_frame, columns=("Filename"), show="headings", height=5)
         self.file_listbox.heading("Filename", text="Filename")
         self.file_listbox.pack(side=tk.LEFT, fill="both", expand=True)
+        
+        # Bind double-click event to open file in editor
+        self.file_listbox.bind("<Double-1>", self.open_file_in_editor)
         
         scrollbar = ttk.Scrollbar(self.file_listbox, orient="vertical", command=self.file_listbox.yview)
         self.file_listbox.configure(yscrollcommand=scrollbar.set)
@@ -60,7 +98,7 @@ class VerilogGUI:
         self.move_down_btn.pack(fill="x", pady=2)
 
         # Frame for output settings
-        output_frame = ttk.LabelFrame(self.master, text="Output Settings")
+        output_frame = ttk.LabelFrame(self.console_frame, text="Output Settings")
         output_frame.pack(fill="x")
 
         ttk.Label(output_frame, text="Compiled Output (.vvp):").grid(row=0, column=0, sticky="w", pady=2)
@@ -80,7 +118,7 @@ class VerilogGUI:
         output_frame.grid_columnconfigure(1, weight=1)
 
         # Frame for command buttons
-        cmd_frame = ttk.Frame(self.master)
+        cmd_frame = ttk.Frame(self.console_frame)
         cmd_frame.pack(fill="x")
 
         self.compile_btn = ttk.Button(cmd_frame, text="Compile (iverilog)", command=self.compile_verilog)
@@ -96,7 +134,7 @@ class VerilogGUI:
         self.clean_btn.pack(side=tk.LEFT, expand=True, fill="x", padx=5)
 
         # Frame for Advanced Options
-        adv_frame = ttk.LabelFrame(self.master, text="Advanced Options")
+        adv_frame = ttk.LabelFrame(self.console_frame, text="Advanced Options")
         adv_frame.pack(fill="x", padx=10, pady=5)
 
         ttk.Label(adv_frame, text="Icarus Verilog Flags:").pack(side=tk.LEFT, padx=5)
@@ -104,7 +142,7 @@ class VerilogGUI:
         self.iverilog_flags_entry.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
 
         # Frame for information output
-        log_frame = ttk.LabelFrame(self.master, text="Command Output & Log")
+        log_frame = ttk.LabelFrame(self.console_frame, text="Command Output & Log")
         log_frame.pack(fill="both", expand=True)
 
         self.output_log_widget = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=15)
@@ -126,6 +164,18 @@ class VerilogGUI:
         file_menu.add_separator()
         file_menu.add_command(label="New Project", command=self.new_project)
         file_menu.add_command(label="Exit", command=self.master.quit)
+
+        edit_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Edit", menu=edit_menu)
+        edit_menu.add_command(label="Find...", command=self.find_text)
+        edit_menu.add_command(label="Replace...", command=self.replace_text)
+
+        # Menu for Code Templates
+        template_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Templates", menu=template_menu)
+        template_menu.add_command(label="New Module", command=lambda: self.insert_template("new_module"))
+        template_menu.add_command(label="New Testbench", command=lambda: self.insert_template("new_testbench"))
+        template_menu.add_command(label="always @(posedge clk) block", command=lambda: self.insert_template("always_posedge_clk"))
 
     def check_dependencies(self):
         """检查iverilog, vvp, gtkwave是否存在于PATH中"""
@@ -495,6 +545,363 @@ class VerilogGUI:
         """窗口关闭时的回调函数，用于保存状态并退出"""
         self.save_window_state()
         self.master.destroy()
+
+    def open_file_in_editor(self, event):
+        selected_items = self.file_listbox.selection()
+        if not selected_items:
+            messagebox.showinfo("提示", "请选择要打开的文件。")
+            return
+
+        item_id = selected_items[0]
+        # Get the index of the selected item in the Treeview
+        index_in_treeview = self.file_listbox.index(item_id)
+        
+        file_path_to_open = ""
+        if 0 <= index_in_treeview < len(self.verilog_files):
+            file_path_to_open = self.verilog_files[index_in_treeview]
+        else:
+            messagebox.showerror("错误", "无法获取文件路径。")
+            return
+        
+        file_basename = os.path.basename(file_path_to_open)
+
+        if file_path_to_open in self.open_editors:
+            # If the file is already open in an editor, focus on that tab
+            self.notebook.select(self.open_editors[file_path_to_open][0]) # select the frame
+        else:
+            # If the file is not open in an editor, open a new tab
+            tab_data = self.create_editor_tab(file_path_to_open)
+            if tab_data: # If creation was successful (tab_frame, text_widget)
+                tab_frame, text_widget = tab_data
+                self.notebook.add(tab_frame, text=file_basename)
+                self.notebook.select(tab_frame)
+                self.open_editors[file_path_to_open] = (tab_frame, text_widget)
+            else:
+                messagebox.showerror("错误", f"无法创建编辑器标签页以打开文件：{file_basename}")
+
+    def create_editor_tab(self, file_path):
+        editor_frame = ttk.Frame(self.notebook)
+
+        # Frame to hold line numbers and text widget
+        text_line_frame = ttk.Frame(editor_frame)
+        text_line_frame.pack(expand=True, fill="both")
+        
+        self.linenumbers = tk.Canvas(text_line_frame, width=30, background="#f0f0f0", highlightthickness=0)
+        self.linenumbers.pack(side=tk.LEFT, fill="y")
+
+        text_widget = scrolledtext.ScrolledText(text_line_frame, wrap=tk.WORD, undo=True)
+        text_widget.pack(side=tk.LEFT, expand=True, fill="both")
+
+        # Configure Pygments related tags
+        for token_type, style_config in self.pygments_tag_styles.items():
+            text_widget.tag_config(style_config["tag"], **{k: v for k, v in style_config.items() if k != "tag"})
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            text_widget.insert(tk.END, content)
+            text_widget.edit_modified(False) # Reset modified flag after loading
+            self._apply_syntax_highlighting(text_widget) # Apply initial highlighting
+            self._update_line_numbers(text_widget, self.linenumbers) # Initial line number update
+        except Exception as e:
+            messagebox.showerror("错误", f"无法打开文件 {os.path.basename(file_path)}: {e}")
+            editor_frame.destroy() # Clean up the frame if opening fails
+            return None # Indicate failure
+
+        # Bind key release event for real-time highlighting and line numbers
+        text_widget.bind("<KeyRelease>", lambda event, tw=text_widget, ln=self.linenumbers: self._handle_editor_content_change(event, tw, ln))
+        text_widget.bind("<Configure>", lambda event, tw=text_widget, ln=self.linenumbers: self._update_line_numbers(tw, ln))
+        text_widget.bind("<MouseWheel>", lambda event, tw=text_widget, ln=self.linenumbers: self._update_line_numbers(tw, ln))
+        text_widget.bind("<Button-4>", lambda event, tw=text_widget, ln=self.linenumbers: self._update_line_numbers(tw, ln)) # For Linux scroll up
+        text_widget.bind("<Button-5>", lambda event, tw=text_widget, ln=self.linenumbers: self._update_line_numbers(tw, ln)) # For Linux scroll down
+
+        # Link text widget scroll to line numbers scroll
+        text_widget.config(yscrollcommand=lambda *args: self._on_text_scroll(text_widget, self.linenumbers, *args))
+
+        return editor_frame, text_widget # Return both the frame and the text widget
+
+    def _handle_editor_content_change(self, event, text_widget, linenumbers_canvas):
+        # Call syntax highlighting
+        self._apply_syntax_highlighting(text_widget)
+        # Call line number update
+        self._update_line_numbers(text_widget, linenumbers_canvas)
+
+    def _on_text_scroll(self, text_widget, linenumbers_canvas, *args):
+        text_widget.yview(*args) # Apply scroll to text widget
+        self._update_line_numbers(text_widget, linenumbers_canvas) # Update line numbers
+
+    def _update_line_numbers(self, text_widget, linenumbers_canvas):
+        linenumbers_canvas.delete("all")
+
+        i = 1
+        # Get the first visible line number
+        first_visible_line = int(text_widget.index("@0,0").split(".")[0])
+        # Get the last visible line number by checking the yview
+        last_visible_line = int(text_widget.index("@0,%s" % linenumbers_canvas.winfo_height()).split(".")[0]) + 1 # +1 to ensure last line is checked
+
+        for line_number in range(first_visible_line, last_visible_line):
+            dline = text_widget.dlineinfo(f"{line_number}.0")
+            if dline is None: # Line is not visible or doesn't exist
+                continue
+            
+            y = dline[1] # Y-coordinate of the line
+            linenumbers_canvas.create_text(2, y, anchor="nw", text=str(line_number), fill="gray")
+
+    def _apply_syntax_highlighting(self, text_widget):
+        # Clear all existing tags
+        for tag_name in text_widget.tag_names():
+            if tag_name not in ("sel", "error", "warning", "cmd"): # Exclude built-in selection and my log tags
+                text_widget.tag_remove(tag_name, "1.0", tk.END)
+
+        content = text_widget.get("1.0", tk.END + "-1c") # Get all text, excluding the final newline
+        lexer = VerilogLexer() # Initialize Verilog Lexer
+
+        offset = 0
+        for token_type, value in lexer.get_tokens_unprocessed(content):
+            tag_config = self.pygments_tag_styles.get(token_type)
+            # Try to find a more general tag if specific one not found
+            if not tag_config:
+                # Walk up the token hierarchy to find a matching tag
+                current_type = token_type
+                while current_type.parent and not tag_config:
+                    current_type = current_type.parent
+                    tag_config = self.pygments_tag_styles.get(current_type)
+            
+            if tag_config: # Apply tag if found
+                start_index = text_widget.index(f"1.0 + {offset}c")
+                end_index = text_widget.index(f"1.0 + {offset + len(value)}c")
+                text_widget.tag_add(tag_config["tag"], start_index, end_index)
+            offset += len(value)
+
+    def find_text(self):
+        current_text_widget = self._get_current_editor_widget()
+        if not current_text_widget:
+            messagebox.showinfo("提示", "请先打开一个文件进行编辑。")
+            return
+
+        find_dialog = tk.Toplevel(self.master)
+        find_dialog.title("查找")
+        find_dialog.transient(self.master) # Make dialog transient to main window
+        find_dialog.grab_set() # Grab focus
+        find_dialog.resizable(False, False)
+
+        ttk.Label(find_dialog, text="查找内容:").grid(row=0, column=0, padx=5, pady=5)
+        search_entry = ttk.Entry(find_dialog, width=30)
+        search_entry.grid(row=0, column=1, padx=5, pady=5)
+        search_entry.focus_set()
+
+        def find_next_occurrence():
+            search_term = search_entry.get()
+            if not search_term: return
+
+            # Clear previous highlights
+            current_text_widget.tag_remove("match", "1.0", tk.END)
+
+            start_pos = current_text_widget.search(search_term, current_text_widget.index(tk.INSERT), stopindex=tk.END, nocase=True)
+            
+            if start_pos:
+                end_pos = f"{start_pos}+{len(search_term)}c"
+                current_text_widget.tag_add("match", start_pos, end_pos)
+                current_text_widget.tag_config("match", background="yellow", foreground="black")
+                current_text_widget.see(start_pos)
+                current_text_widget.mark_set(tk.INSERT, end_pos) # Move cursor to end of found text
+            else:
+                messagebox.showinfo("查找", f"未找到 \"{search_term}\"。")
+                current_text_widget.mark_set(tk.INSERT, "1.0") # Reset search to beginning
+
+        ttk.Button(find_dialog, text="查找下一个", command=find_next_occurrence).grid(row=0, column=2, padx=5, pady=5)
+
+        # Close dialog on window close button
+        find_dialog.protocol("WM_DELETE_WINDOW", find_dialog.destroy)
+        self.master.wait_window(find_dialog) # Wait until dialog is closed
+
+    def replace_text(self):
+        current_text_widget = self._get_current_editor_widget()
+        if not current_text_widget:
+            messagebox.showinfo("提示", "请先打开一个文件进行编辑。")
+            return
+
+        replace_dialog = tk.Toplevel(self.master)
+        replace_dialog.title("查找和替换")
+        replace_dialog.transient(self.master)
+        replace_dialog.grab_set()
+        replace_dialog.resizable(False, False)
+
+        ttk.Label(replace_dialog, text="查找内容:").grid(row=0, column=0, padx=5, pady=5)
+        search_entry = ttk.Entry(replace_dialog, width=30)
+        search_entry.grid(row=0, column=1, padx=5, pady=5)
+        search_entry.focus_set()
+
+        ttk.Label(replace_dialog, text="替换为:").grid(row=1, column=0, padx=5, pady=5)
+        replace_entry = ttk.Entry(replace_dialog, width=30)
+        replace_entry.grid(row=1, column=1, padx=5, pady=5)
+
+        def find_next_occurrence_replace():
+            search_term = search_entry.get()
+            if not search_term: return
+
+            # Clear previous highlights
+            current_text_widget.tag_remove("match", "1.0", tk.END)
+
+            start_pos = current_text_widget.search(search_term, current_text_widget.index(tk.INSERT), stopindex=tk.END, nocase=True)
+            
+            if start_pos:
+                end_pos = f"{start_pos}+{len(search_term)}c"
+                current_text_widget.tag_add("match", start_pos, end_pos)
+                current_text_widget.tag_config("match", background="yellow", foreground="black")
+                current_text_widget.see(start_pos)
+                current_text_widget.mark_set(tk.INSERT, end_pos) # Move cursor to end of found text
+            else:
+                messagebox.showinfo("查找", f"未找到 \"{search_term}\"。")
+                current_text_widget.mark_set(tk.INSERT, "1.0") # Reset search to beginning
+        
+        def replace_current_occurrence():
+            search_term = search_entry.get()
+            replace_term = replace_entry.get()
+            if not search_term: return
+            
+            # Check if there's an active selection from find_next_occurrence_replace
+            current_selection = current_text_widget.tag_ranges("match")
+            if current_selection:
+                # If there's a selection, replace it
+                start = current_selection[0]
+                end = current_selection[1]
+                current_text_widget.delete(start, end)
+                current_text_widget.insert(start, replace_term)
+                current_text_widget.tag_remove("match", "1.0", tk.END) # Clear highlight after replace
+                current_text_widget.mark_set(tk.INSERT, f"{start}+{len(replace_term)}c")
+                find_next_occurrence_replace() # Find next after replacing
+            else:
+                # If no active selection, just find the next one
+                find_next_occurrence_replace()
+
+        def replace_all_occurrences():
+            search_term = search_entry.get()
+            replace_term = replace_entry.get()
+            if not search_term: return
+
+            current_text_widget.tag_remove("match", "1.0", tk.END) # Clear all highlights
+
+            # Start search from beginning of document
+            start_pos = "1.0"
+            count = 0
+            while True:
+                start_pos = current_text_widget.search(search_term, start_pos, stopindex=tk.END, nocase=True)
+                if not start_pos: break
+
+                end_pos = f"{start_pos}+{len(search_term)}c"
+                current_text_widget.delete(start_pos, end_pos)
+                current_text_widget.insert(start_pos, replace_term)
+                
+                # Move search start past the newly inserted text to avoid infinite loop
+                start_pos = current_text_widget.index(f"{start_pos}+{len(replace_term)}c")
+                count += 1
+            messagebox.showinfo("替换完成", f"已替换 {count} 处。")
+
+        ttk.Button(replace_dialog, text="查找下一个", command=find_next_occurrence_replace).grid(row=0, column=2, padx=5, pady=5)
+        ttk.Button(replace_dialog, text="替换", command=replace_current_occurrence).grid(row=1, column=2, padx=5, pady=5)
+        ttk.Button(replace_dialog, text="全部替换", command=replace_all_occurrences).grid(row=2, column=2, padx=5, pady=5)
+
+        replace_dialog.protocol("WM_DELETE_WINDOW", replace_dialog.destroy)
+        self.master.wait_window(replace_dialog)
+
+    def _get_current_editor_widget(self):
+        # Get the currently selected tab
+        selected_tab_id = self.notebook.select()
+        # Get the widget (frame) associated with the selected tab
+        selected_tab_frame = self.notebook.nametowidget(selected_tab_id)
+
+        # Check if the selected tab is the console frame
+        if selected_tab_frame == self.console_frame:
+            return None # No editor widget in console tab
+
+        # Iterate through open_editors to find the text widget for the selected tab_frame
+        for file_path, (tab_frame, text_widget) in self.open_editors.items():
+            if tab_frame == selected_tab_frame:
+                return text_widget
+        return None # Should not happen if open_editors is managed correctly
+
+    def insert_template(self, template_type):
+        current_text_widget = self._get_current_editor_widget()
+        if not current_text_widget:
+            messagebox.showinfo("提示", "请先打开一个文件，然后在编辑器中插入模板。")
+            return
+
+        templates = {
+            "new_module": """
+module new_module (
+    // Add inputs and outputs here
+    input wire clk,
+    input wire rst_n,
+    // ...
+);
+
+// Internal signals
+
+// Behavioral/Structural logic
+
+endmodule
+""",
+            "new_testbench": """
+`timescale 1ns / 1ps
+
+module testbench_top;
+
+    // Parameters
+    parameter CLK_PERIOD = 10;
+
+    // Signals
+    reg clk;
+    reg rst_n;
+    // Add signals for DUT inputs/outputs
+
+    // Instantiate the Unit Under Test (DUT)
+    // Replace dut_name with your actual module name
+    dut_name UUT (
+        // Connect DUT ports
+        .clk(clk),
+        .rst_n(rst_n)
+        // ...
+    );
+
+    // Clock generation
+    initial begin
+        clk = 0;
+        forever #(CLK_PERIOD / 2) clk = ~clk;
+    end
+
+    // Test sequence
+    initial begin
+        $dumpfile("wave.vcd");
+        $dumpvars(0, testbench_top);
+
+        rst_n = 0; // Assert reset
+        #(CLK_PERIOD * 2) rst_n = 1; // De-assert reset
+
+        // Add your test vectors here
+
+        #(CLK_PERIOD * 10)
+        $finish;
+    end
+
+endmodule
+""",
+            "always_posedge_clk": """
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        // Asynchronous reset logic
+    end else begin
+        // Synchronous logic
+    end
+end
+"""
+        }
+
+        template_content = templates.get(template_type)
+        if template_content:
+            current_text_widget.insert(tk.INSERT, template_content)
+        else:
+            messagebox.showerror("错误", "未知模板类型。")
 
 if __name__ == "__main__":
     root = tk.Tk()
