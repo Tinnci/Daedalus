@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import ttk # Import ttk module
 import shutil
 import subprocess
 import os
@@ -9,11 +10,18 @@ class VerilogGUI:
     def __init__(self, master):
         self.master = master
         master.title("Verilog GUI Wrapper")
-        master.geometry("800x600")
+        # master.geometry("800x600") # Removed fixed geometry
 
         self.tool_paths = {}
         self.verilog_files = []
         self.project_path = ""
+        self.config_file_path = "config.json"
+
+        # Load window state on startup
+        self.load_window_state()
+
+        # Set protocol for window closing
+        self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         # --- GUI Elements ---
         self.create_widgets()
@@ -23,56 +31,67 @@ class VerilogGUI:
 
     def create_widgets(self):
         # Frame for file selection
-        file_frame = tk.LabelFrame(self.master, text="Verilog Source Files", padx=10, pady=10)
-        file_frame.pack(fill="x", padx=10, pady=5)
+        file_frame = ttk.LabelFrame(self.master, text="Verilog Source Files")
+        file_frame.pack(fill="x")
 
-        self.file_listbox = tk.Listbox(file_frame, height=5, selectmode=tk.MULTIPLE)
+        # Use Treeview for file list
+        self.file_listbox = ttk.Treeview(file_frame, columns=("Filename"), show="headings", height=5)
+        self.file_listbox.heading("Filename", text="Filename")
         self.file_listbox.pack(side=tk.LEFT, fill="both", expand=True)
-        scrollbar = tk.Scrollbar(self.file_listbox)
+        
+        scrollbar = ttk.Scrollbar(self.file_listbox, orient="vertical", command=self.file_listbox.yview)
+        self.file_listbox.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side=tk.RIGHT, fill="y")
-        self.file_listbox.config(yscrollcommand=scrollbar.set)
-        scrollbar.config(command=self.file_listbox.yview)
 
-        btn_frame_files = tk.Frame(file_frame)
+        btn_frame_files = ttk.Frame(file_frame)
         btn_frame_files.pack(side=tk.RIGHT, padx=5)
         
-        self.add_file_btn = tk.Button(btn_frame_files, text="Add File(s)", command=self.add_verilog_files)
+        self.add_file_btn = ttk.Button(btn_frame_files, text="Add File(s)", command=self.add_verilog_files)
         self.add_file_btn.pack(fill="x", pady=2)
 
-        self.remove_file_btn = tk.Button(btn_frame_files, text="Remove Selected", command=self.remove_verilog_files)
+        self.remove_file_btn = ttk.Button(btn_frame_files, text="Remove Selected", command=self.remove_verilog_files)
         self.remove_file_btn.pack(fill="x", pady=2)
 
-        # Frame for output settings
-        output_frame = tk.LabelFrame(self.master, text="Output Settings", padx=10, pady=10)
-        output_frame.pack(fill="x", padx=10, pady=5)
+        self.move_up_btn = ttk.Button(btn_frame_files, text="Move Up", command=self.move_file_up)
+        self.move_up_btn.pack(fill="x", pady=2)
 
-        tk.Label(output_frame, text="Compiled Output (.vvp):").grid(row=0, column=0, sticky="w", pady=2)
-        self.vvp_output_entry = tk.Entry(output_frame, width=40)
+        self.move_down_btn = ttk.Button(btn_frame_files, text="Move Down", command=self.move_file_down)
+        self.move_down_btn.pack(fill="x", pady=2)
+
+        # Frame for output settings
+        output_frame = ttk.LabelFrame(self.master, text="Output Settings")
+        output_frame.pack(fill="x")
+
+        ttk.Label(output_frame, text="Compiled Output (.vvp):").grid(row=0, column=0, sticky="w", pady=2)
+        self.vvp_output_entry = ttk.Entry(output_frame, width=40)
         self.vvp_output_entry.insert(0, "design.vvp")
         self.vvp_output_entry.grid(row=0, column=1, sticky="ew", pady=2)
 
-        tk.Label(output_frame, text="Waveform Output (.vcd):").grid(row=1, column=0, sticky="w", pady=2)
-        self.vcd_output_entry = tk.Entry(output_frame, width=40)
+        ttk.Label(output_frame, text="Waveform Output (.vcd):").grid(row=1, column=0, sticky="w", pady=2)
+        self.vcd_output_entry = ttk.Entry(output_frame, width=40)
         self.vcd_output_entry.insert(0, "wave.vcd")
         self.vcd_output_entry.grid(row=1, column=1, sticky="ew", pady=2)
         output_frame.grid_columnconfigure(1, weight=1)
 
         # Frame for command buttons
-        cmd_frame = tk.Frame(self.master, padx=10, pady=5)
-        cmd_frame.pack(fill="x", padx=10, pady=5)
+        cmd_frame = ttk.Frame(self.master)
+        cmd_frame.pack(fill="x")
 
-        self.compile_btn = tk.Button(cmd_frame, text="Compile (iverilog)", command=self.compile_verilog)
+        self.compile_btn = ttk.Button(cmd_frame, text="Compile (iverilog)", command=self.compile_verilog)
         self.compile_btn.pack(side=tk.LEFT, expand=True, fill="x", padx=5)
 
-        self.simulate_btn = tk.Button(cmd_frame, text="Simulate (vvp)", command=self.simulate_verilog)
+        self.simulate_btn = ttk.Button(cmd_frame, text="Simulate (vvp)", command=self.simulate_verilog)
         self.simulate_btn.pack(side=tk.LEFT, expand=True, fill="x", padx=5)
 
-        self.view_wave_btn = tk.Button(cmd_frame, text="View Wave (GTKWave)", command=self.view_waveform)
+        self.view_wave_btn = ttk.Button(cmd_frame, text="View Wave (GTKWave)", command=self.view_waveform)
         self.view_wave_btn.pack(side=tk.LEFT, expand=True, fill="x", padx=5)
 
+        self.clean_btn = ttk.Button(cmd_frame, text="Clean Project", command=self.clean_project)
+        self.clean_btn.pack(side=tk.LEFT, expand=True, fill="x", padx=5)
+
         # Frame for information output
-        log_frame = tk.LabelFrame(self.master, text="Command Output & Log", padx=10, pady=10)
-        log_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        log_frame = ttk.LabelFrame(self.master, text="Command Output & Log")
+        log_frame.pack(fill="both", expand=True)
 
         self.output_log_widget = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=15)
         self.output_log_widget.pack(fill="both", expand=True)
@@ -188,6 +207,40 @@ class VerilogGUI:
         except Exception as e:
             self.output_log_widget.insert(tk.END, f"\n启动 GTKWave 失败: {e}\n")
 
+    def clean_project(self):
+        self.output_log_widget.delete('1.0', tk.END) # Clear previous log
+        self.output_log_widget.insert(tk.END, "\n--- 正在清理项目文件 ---\n")
+        self.output_log_widget.update_idletasks()
+
+        files_to_clean = []
+        vvp_file = self.vvp_output_entry.get()
+        vcd_file = self.vcd_output_entry.get()
+
+        if vvp_file: files_to_clean.append(vvp_file)
+        if vcd_file: files_to_clean.append(vcd_file)
+
+        cleaned_count = 0
+        for f in files_to_clean:
+            # Construct the full path relative to the current project directory if project_path is set,
+            # otherwise assume current working directory.
+            file_full_path = os.path.join(os.path.dirname(self.project_path) if self.project_path else os.getcwd(), f)
+
+            if os.path.exists(file_full_path):
+                try:
+                    os.remove(file_full_path)
+                    self.output_log_widget.insert(tk.END, f"已删除: {os.path.basename(f)}\n")
+                    cleaned_count += 1
+                except Exception as e:
+                    self.output_log_widget.insert(tk.END, f"删除 {os.path.basename(f)} 失败: {e}\n")
+            else:
+                self.output_log_widget.insert(tk.END, f"文件不存在，跳过: {os.path.basename(f)}\n")
+
+        if cleaned_count > 0:
+            self.output_log_widget.insert(tk.END, "\n--- 清理完成 ---\n")
+        else:
+            self.output_log_widget.insert(tk.END, "\n--- 没有发现可清理的文件 ---\n")
+        self.output_log_widget.see(tk.END)
+
     def add_verilog_files(self):
         files = filedialog.askopenfilenames(
             title="选择 Verilog 源文件",
@@ -196,13 +249,66 @@ class VerilogGUI:
         for f in files:
             if f not in self.verilog_files:
                 self.verilog_files.append(f)
-                self.file_listbox.insert(tk.END, f)
+                # Display only the basename in the Treeview
+                self.file_listbox.insert("", "end", values=(os.path.basename(f),))
 
     def remove_verilog_files(self):
-        selected_indices = self.file_listbox.curselection()
-        for i in selected_indices[::-1]: # Delete from end to avoid index issues
-            self.file_listbox.delete(i)
-            del self.verilog_files[i]
+        selected_items = self.file_listbox.selection()
+        if not selected_items:
+            messagebox.showinfo("提示", "请选择要移除的文件。")
+            return
+        
+        # Process from end to start to avoid index issues when deleting
+        for item in sorted(selected_items, reverse=True):
+            # Get the current index of the item in the Treeview
+            index_in_treeview = self.file_listbox.index(item)
+            
+            # Remove from internal list using the index
+            if 0 <= index_in_treeview < len(self.verilog_files):
+                del self.verilog_files[index_in_treeview]
+            
+            # Remove from Treeview
+            self.file_listbox.delete(item)
+
+    def move_file_up(self):
+        selected_items = self.file_listbox.selection()
+        if not selected_items:
+            return # No item selected
+        
+        # We only move the first selected item for simplicity. Can be extended to multiple.
+        item_id = selected_items[0]
+        current_index = self.file_listbox.index(item_id)
+        
+        if current_index > 0:
+            # Swap in the internal list
+            self.verilog_files[current_index], self.verilog_files[current_index - 1] = \
+                self.verilog_files[current_index - 1], self.verilog_files[current_index]
+            
+            # Move in the Treeview
+            self.file_listbox.move(item_id, '', current_index - 1)
+            # Re-select the moved item
+            self.file_listbox.selection_set(item_id)
+            self.file_listbox.focus(item_id)
+
+    def move_file_down(self):
+        selected_items = self.file_listbox.selection()
+        if not selected_items:
+            return # No item selected
+        
+        # We only move the first selected item for simplicity. Can be extended to multiple.
+        item_id = selected_items[0]
+        current_index = self.file_listbox.index(item_id)
+        
+        if current_index < len(self.verilog_files) - 1:
+            # Swap in the internal list
+            self.verilog_files[current_index], self.verilog_files[current_index + 1] = \
+                self.verilog_files[current_index + 1], self.verilog_files[current_index]
+            
+            # Move in the Treeview
+            self.file_listbox.move(item_id, '', current_index + 1)
+            # Re-select the moved item
+            self.file_listbox.selection_set(item_id)
+            self.file_listbox.focus(item_id)
 
     def compile_verilog(self):
         if not self.tool_paths.get('iverilog'):
@@ -251,30 +357,32 @@ class VerilogGUI:
 
     def open_project(self):
         project_file = filedialog.askopenfilename(
-            title="打开项目文件",
-            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
+            title="Open Daedalus Project",
+            filetypes=[("Daedalus Project Files", "*.json")]
         )
-        if project_file:
-            try:
-                with open(project_file, 'r', encoding='utf-8') as f:
-                    project_data = json.load(f)
-                
-                self.verilog_files = project_data.get('source_files', [])
-                self.file_listbox.delete(0, tk.END)
-                for f in self.verilog_files:
-                    self.file_listbox.insert(tk.END, f)
-                
-                self.vvp_output_entry.delete(0, tk.END)
-                self.vvp_output_entry.insert(0, project_data.get('output_vvp', 'design.vvp'))
-                
-                self.vcd_output_entry.delete(0, tk.END)
-                self.vcd_output_entry.insert(0, project_data.get('output_vcd', 'wave.vcd'))
+        if not project_file: return
 
-                self.project_path = project_file
-                self.output_log_widget.insert(tk.END, f"\n项目 '{os.path.basename(project_file)}' 加载成功。\n")
-            except Exception as e:
-                messagebox.showerror("错误", f"加载项目失败: {e}")
-                self.output_log_widget.insert(tk.END, f"\n加载项目失败: {e}\n")
+        try:
+            with open(project_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            self.project_path = project_file
+            self.verilog_files = data.get('verilog_files', [])
+            self.vvp_output_entry.delete(0, tk.END)
+            self.vvp_output_entry.insert(0, data.get('vvp_output', "design.vvp"))
+            self.vcd_output_entry.delete(0, tk.END)
+            self.vcd_output_entry.insert(0, data.get('vcd_output', "wave.vcd"))
+
+            # Clear and repopulate Treeview
+            for item in self.file_listbox.get_children():
+                self.file_listbox.delete(item)
+            for f in self.verilog_files:
+                self.file_listbox.insert("", "end", values=(os.path.basename(f),))
+            
+            messagebox.showinfo("项目加载", f"项目 '{os.path.basename(project_file)}' 加载成功！")
+
+        except Exception as e:
+            messagebox.showerror("错误", f"加载项目失败: {e}")
 
     def save_project_as(self):
         project_file = filedialog.asksaveasfilename(
@@ -308,6 +416,38 @@ class VerilogGUI:
         self.project_path = ""
         self.output_log_widget.insert(tk.END, "\n--- 新项目已创建，所有设置已清空 ---\n")
         messagebox.showinfo("新建项目", "新项目已成功创建。")
+
+    def load_window_state(self):
+        """从配置文件加载窗口大小和位置"""
+        if os.path.exists(self.config_file_path):
+            try:
+                with open(self.config_file_path, 'r') as f:
+                    config = json.load(f)
+                geometry = config.get('geometry')
+                if geometry:
+                    self.master.geometry(geometry)
+            except Exception as e:
+                print(f"加载窗口状态失败: {e}")
+                # Fallback to default if loading fails
+                self.master.geometry("800x600")
+        else:
+            # Default geometry if no config file exists
+            self.master.geometry("800x600")
+
+    def save_window_state(self):
+        """保存当前窗口的大小和位置到配置文件"""
+        geometry = self.master.geometry()
+        config = {'geometry': geometry}
+        try:
+            with open(self.config_file_path, 'w') as f:
+                json.dump(config, f)
+        except Exception as e:
+            print(f"保存窗口状态失败: {e}")
+
+    def on_closing(self):
+        """窗口关闭时的回调函数，用于保存状态并退出"""
+        self.save_window_state()
+        self.master.destroy()
 
 if __name__ == "__main__":
     root = tk.Tk()
