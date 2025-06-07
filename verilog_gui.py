@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import os
 import json
+import shlex # Import shlex for safe command string splitting
 
 class VerilogGUI:
     def __init__(self, master):
@@ -71,6 +72,11 @@ class VerilogGUI:
         self.vcd_output_entry = ttk.Entry(output_frame, width=40)
         self.vcd_output_entry.insert(0, "wave.vcd")
         self.vcd_output_entry.grid(row=1, column=1, sticky="ew", pady=2)
+
+        ttk.Label(output_frame, text="GTKWave Save File (.gtkw):").grid(row=2, column=0, sticky="w", pady=2)
+        self.gtkw_file_entry = ttk.Entry(output_frame, width=40)
+        self.gtkw_file_entry.insert(0, "wave.gtkw")
+        self.gtkw_file_entry.grid(row=2, column=1, sticky="ew", pady=2)
         output_frame.grid_columnconfigure(1, weight=1)
 
         # Frame for command buttons
@@ -89,12 +95,25 @@ class VerilogGUI:
         self.clean_btn = ttk.Button(cmd_frame, text="Clean Project", command=self.clean_project)
         self.clean_btn.pack(side=tk.LEFT, expand=True, fill="x", padx=5)
 
+        # Frame for Advanced Options
+        adv_frame = ttk.LabelFrame(self.master, text="Advanced Options")
+        adv_frame.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(adv_frame, text="Icarus Verilog Flags:").pack(side=tk.LEFT, padx=5)
+        self.iverilog_flags_entry = ttk.Entry(adv_frame)
+        self.iverilog_flags_entry.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
+
         # Frame for information output
         log_frame = ttk.LabelFrame(self.master, text="Command Output & Log")
         log_frame.pack(fill="both", expand=True)
 
         self.output_log_widget = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=15)
         self.output_log_widget.pack(fill="both", expand=True)
+
+        # Configure tags for log highlighting
+        self.output_log_widget.tag_config("ERROR", foreground="red")
+        self.output_log_widget.tag_config("WARNING", foreground="orange")
+        self.output_log_widget.tag_config("CMD", foreground="blue")
 
         # Menu Bar for project management
         menubar = tk.Menu(self.master)
@@ -151,7 +170,7 @@ class VerilogGUI:
     def run_command(self, command_list):
         """执行一个命令并将其输出实时显示在GUI的文本框中"""
         self.output_log_widget.delete('1.0', tk.END) # 清空上次的输出
-        self.output_log_widget.insert(tk.END, f"正在执行命令: {' '.join(command_list)}\n\n")
+        self.output_log_widget.insert(tk.END, f"正在执行命令: {' '.join(command_list)}\n\n", "CMD") # Tag the command line as CMD
         self.output_log_widget.update()
 
         try:
@@ -171,7 +190,15 @@ class VerilogGUI:
                 line = process.stdout.readline()
                 if not line:
                     break
-                self.output_log_widget.insert(tk.END, line)
+
+                # Simple check for keywords and apply tags
+                if "error" in line.lower():
+                    self.output_log_widget.insert(tk.END, line, "ERROR")
+                elif "warning" in line.lower():
+                    self.output_log_widget.insert(tk.END, line, "WARNING")
+                else:
+                    self.output_log_widget.insert(tk.END, line)
+
                 self.output_log_widget.see(tk.END) # 滚动到底部
                 self.output_log_widget.update_idletasks() # Use update_idletasks for better responsiveness
                 
@@ -197,10 +224,20 @@ class VerilogGUI:
             self.output_log_widget.insert(tk.END, f"\n错误: VCD文件 '{vcd_file_path}' 不存在。请先进行仿真。\n")
             return
 
+        gtkw_file_path = self.gtkw_file_entry.get()
+        command = [gtkwave_path, vcd_file_path]
+
+        # 如果用户指定了 .gtkw 文件并且它存在，就添加到命令中
+        if gtkw_file_path and os.path.exists(gtkw_file_path):
+            self.output_log_widget.insert(tk.END, f"找到 GTKWave 配置文件: {gtkw_file_path}\n")
+            command.append(gtkw_file_path)
+        else:
+            self.output_log_widget.insert(tk.END, "未找到 GTKWave 配置文件，将使用默认视图。\n")
+
         self.output_log_widget.insert(tk.END, f"\n正在启动 GTKWave 加载 {vcd_file_path}...\n")
         try:
             # 使用Popen启动一个独立的进程，我们的GUI不用等它
-            subprocess.Popen([gtkwave_path, vcd_file_path],
+            subprocess.Popen(command,
                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         except FileNotFoundError:
             self.output_log_widget.insert(tk.END, f"\n错误: GTKWave 未在 '{gtkwave_path}' 找到。\n")
@@ -323,7 +360,12 @@ class VerilogGUI:
             messagebox.showerror("错误", "请指定编译输出文件名 (.vvp)。")
             return
 
-        compile_cmd = [self.tool_paths['iverilog'], '-o', output_vvp] + self.verilog_files
+        extra_flags = []
+        flags_str = self.iverilog_flags_entry.get()
+        if flags_str:
+            extra_flags = shlex.split(flags_str)
+
+        compile_cmd = [self.tool_paths['iverilog'], '-o', output_vvp] + extra_flags + self.verilog_files
         self.run_command(compile_cmd)
 
     def simulate_verilog(self):
@@ -372,6 +414,8 @@ class VerilogGUI:
             self.vvp_output_entry.insert(0, data.get('vvp_output', "design.vvp"))
             self.vcd_output_entry.delete(0, tk.END)
             self.vcd_output_entry.insert(0, data.get('vcd_output', "wave.vcd"))
+            self.gtkw_file_entry.delete(0, tk.END)
+            self.gtkw_file_entry.insert(0, data.get('gtkw_file', "wave.gtkw"))
 
             # Clear and repopulate Treeview
             for item in self.file_listbox.get_children():
@@ -394,7 +438,8 @@ class VerilogGUI:
             project_data = {
                 "source_files": self.verilog_files,
                 "output_vvp": self.vvp_output_entry.get(),
-                "output_vcd": self.vcd_output_entry.get()
+                "output_vcd": self.vcd_output_entry.get(),
+                "gtkw_file": self.gtkw_file_entry.get()
             }
             try:
                 with open(project_file, 'w', encoding='utf-8') as f:
@@ -413,6 +458,8 @@ class VerilogGUI:
         self.vvp_output_entry.insert(0, "design.vvp")
         self.vcd_output_entry.delete(0, tk.END)
         self.vcd_output_entry.insert(0, "wave.vcd")
+        self.gtkw_file_entry.delete(0, tk.END)
+        self.gtkw_file_entry.insert(0, "wave.gtkw")
         self.project_path = ""
         self.output_log_widget.insert(tk.END, "\n--- 新项目已创建，所有设置已清空 ---\n")
         messagebox.showinfo("新建项目", "新项目已成功创建。")
