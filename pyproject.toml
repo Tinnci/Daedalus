@@ -4,4 +4,7 @@ version = "0.1.0"
 description = "A GUI Wrapper for Icarus Verilog and GTKWave to simplify Verilog compilation and simulation."
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "pygments>=2.17.2", # For syntax highlighting
+    "pyinstaller>=6.14.0",
+]
