@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import './SideBar.css';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { readTextFile, BaseDirectory } from '@tauri-apps/plugin-fs';
+import { readTextFile } from '@tauri-apps/plugin-fs';
+import ControlPanel from './ControlPanel';
 
 interface SideBarProps {
   onFileOpen: (filePath: string, content: string) => void;
@@ -21,15 +22,10 @@ const SideBar: React.FC<SideBarProps> = ({ onFileOpen }) => {
         }]
       });
 
-      if (Array.isArray(selected)) {
-        // Filter out files already present to avoid duplicates
-        const newFiles = selected.filter(file => !verilogFiles.includes(file));
+      if (selected) {
+        const paths = Array.isArray(selected) ? selected : [selected];
+        const newFiles = paths.filter(file => !verilogFiles.includes(file));
         setVerilogFiles(prevFiles => [...prevFiles, ...newFiles]);
-      } else if (selected) {
-        // Handle single file selection if multiple is false (though we set it to true)
-        if (!verilogFiles.includes(selected)) {
-          setVerilogFiles(prevFiles => [...prevFiles, selected]);
-        }
       }
     } catch (error) {
       console.error("Error adding files:", error);
@@ -66,7 +62,7 @@ const SideBar: React.FC<SideBarProps> = ({ onFileOpen }) => {
 
   const handleFileDoubleClick = async (filePath: string) => {
     try {
-      const content = await readTextFile(filePath, { baseDir: BaseDirectory.Home }); // Assuming files are in Home for now, will refine later
+      const content = await readTextFile(filePath);
       onFileOpen(filePath, content);
     } catch (error) {
       console.error("Error reading file:", error);
@@ -91,7 +87,7 @@ const SideBar: React.FC<SideBarProps> = ({ onFileOpen }) => {
                   onClick={() => setSelectedFile(file)}
                   onDoubleClick={() => handleFileDoubleClick(file)}
                 >
-                  {file.split('/').pop()} {/* Display only basename */}
+                  {file.split(/[\\/]/).pop()} {/* Display basename */}
                 </li>
               ))}
             </ul>
@@ -104,7 +100,7 @@ const SideBar: React.FC<SideBarProps> = ({ onFileOpen }) => {
           <button onClick={() => moveFile('down')} disabled={!selectedFile || verilogFiles.indexOf(selectedFile) === verilogFiles.length - 1}>Move Down</button>
         </div>
       </div>
-      {/* We will add the hierarchy tree here later */}
+      <ControlPanel verilogFiles={verilogFiles} />
     </div>
   );
 };

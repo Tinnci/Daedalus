@@ -6,9 +6,10 @@ import './EditorPanel.css';
 interface EditorPanelProps {
   filePath: string | null;
   fileContent: string;
+  onContentChange: (filePath: string, newContent: string) => void;
 }
 
-const EditorPanel: React.FC<EditorPanelProps> = ({ filePath, fileContent }) => {
+const EditorPanel: React.FC<EditorPanelProps> = ({ filePath, fileContent, onContentChange }) => {
   const editorRef = useRef<any>(null); // Changed to any for simplicity
   const monacoRef = useRef<any>(null); // Changed to any for simplicity
 
@@ -18,38 +19,53 @@ const EditorPanel: React.FC<EditorPanelProps> = ({ filePath, fileContent }) => {
     monacoRef.current = monacoInstance;
   };
 
+  const handleEditorChange = (value: string | undefined) => {
+    if (filePath && typeof value === 'string') {
+      onContentChange(filePath, value);
+    }
+  };
+
   // Effect to update editor content when fileContent prop changes
   useEffect(() => {
-    if (editorRef.current && monacoRef.current) {
-      editorRef.current.setValue(fileContent);
-      // Optionally, set language based on file extension
-      if (filePath) {
-        const extension = filePath.split('.').pop();
-        if (extension === 'v' || extension === 'sv') {
-          const model = editorRef.current.getModel();
-          if (model) {
-            monacoRef.current.editor.setModelLanguage(model, 'verilog');
-          }
-        } else {
-          // Fallback to plain text or infer other languages
-          const model = editorRef.current.getModel();
-          if (model) {
-            monacoRef.current.editor.setModelLanguage(model, 'plaintext');
-          }
+    if (editorRef.current) {
+        if(editorRef.current.getValue() !== fileContent) {
+            editorRef.current.setValue(fileContent);
         }
-      }
+    }
+    // ... logic to set language based on filePath ...
+    if (editorRef.current && monacoRef.current && filePath) {
+        const extension = filePath.split('.').pop();
+        const model = editorRef.current.getModel();
+        if (model) {
+            if (extension === 'v' || extension === 'sv') {
+                monacoRef.current.editor.setModelLanguage(model, 'verilog');
+            } else {
+                monacoRef.current.editor.setModelLanguage(model, 'plaintext');
+            }
+        }
     }
   }, [fileContent, filePath]);
+
+  if (filePath === null) {
+    return (
+        <div className="editor-panel-placeholder">
+            <p>No file selected</p>
+            <p>Double-click a file in the sidebar to open it.</p>
+        </div>
+    );
+  }
 
   return (
     <div className="editor-panel">
       <Editor
         height="100%"
         width="100%"
-        language="verilog" // Set default language, can be overridden by useEffect
-        value={fileContent} // Use value prop for controlled component
+        key={filePath} // Use key to force re-mount when file path changes
+        defaultValue={fileContent}
+        language="verilog"
         theme="vs-dark"
         onMount={handleEditorDidMount}
+        onChange={handleEditorChange}
       />
     </div>
   );
