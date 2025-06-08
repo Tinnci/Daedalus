@@ -11,4 +11,13 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+
+.dependency-warning {
+  background-color: #443b00;
+  color: #fff;
+  padding: 10px 15px;
+  border-bottom: 1px solid #665800;
+  text-align: center;
+  font-size: 0.9em;
 } 

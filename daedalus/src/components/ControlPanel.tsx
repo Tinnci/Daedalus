@@ -1,9 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Command, Child } from '@tauri-apps/plugin-shell';
+import { invoke } from '@tauri-apps/api/core';
 import './ControlPanel.css';
 
 interface ControlPanelProps {
     verilogFiles: string[];
+    iverilogFlags: string;
+    setIverilogFlags: (value: string) => void;
+    vvpPath: string;
+    setVvpPath: (value: string) => void;
+    vcdPath: string;
+    setVcdPath: (value: string) => void;
 }
 
 interface LogEntry {
@@ -11,10 +18,15 @@ interface LogEntry {
     content: string;
 }
 
-const ControlPanel: React.FC<ControlPanelProps> = ({ verilogFiles }) => {
-    const [iverilogFlags, setIverilogFlags] = useState<string>('-g2012');
-    const [vvpPath, setVvpPath] = useState<string>('design.vvp');
-    const [vcdPath, setVcdPath] = useState<string>('wave.vcd');
+const ControlPanel: React.FC<ControlPanelProps> = ({ 
+    verilogFiles,
+    iverilogFlags,
+    setIverilogFlags,
+    vvpPath,
+    setVvpPath,
+    vcdPath,
+    setVcdPath
+}) => {
     const [log, setLog] = useState<LogEntry[]>([]);
     const logRef = useRef<HTMLDivElement>(null);
 
@@ -32,20 +44,9 @@ const ControlPanel: React.FC<ControlPanelProps> = ({ verilogFiles }) => {
         appendLog({ type: 'cmd', content: `$ ${command} ${args.join(' ')}` });
 
         const cmd = Command.create(command, args);
-        let childStdout = '';
-        let childStderr = '';
         
-        const onStdout = (line: string) => {
-            childStdout += line + '\n';
-            appendLog({ type: 'stdout', content: line });
-        };
-        const onStderr = (line: string) => {
-            childStderr += line + '\n';
-            appendLog({ type: 'stderr', content: line });
-        };
-        
-        cmd.stdout.on('data', onStdout);
-        cmd.stderr.on('data', onStderr);
+        cmd.stdout.on('data', (line) => appendLog({ type: 'stdout', content: line }));
+        cmd.stderr.on('data', (line) => appendLog({ type: 'stderr', content: line }));
 
         try {
             const output = await cmd.execute();
@@ -76,14 +77,25 @@ const ControlPanel: React.FC<ControlPanelProps> = ({ verilogFiles }) => {
     };
 
     const handleViewWave = () => {
-        // gtkwave runs as a detached process
         appendLog({ type: 'cmd', content: `$ gtkwave ${vcdPath}` });
-        const command = Command.create('gtkwave', [vcdPath]);
-        command.spawn().then((child: Child) => {
-             appendLog({ type: 'success', content: `GTKWave process started with PID: ${child.pid}` });
-        }).catch((e: unknown) => {
-            appendLog({ type: 'error', content: `Failed to launch GTKWave: ${String(e)}` });
-        });
+        Command.create('gtkwave', [vcdPath])
+            .spawn()
+            .then((child: Child) => {
+                 appendLog({ type: 'success', content: `GTKWave process started with PID: ${child.pid}` });
+            }).catch((e: unknown) => {
+                appendLog({ type: 'error', content: `Failed to launch GTKWave: ${String(e)}` });
+            });
+    };
+
+    const handleCleanProject = async () => {
+        const filesToClean = [vvpPath, vcdPath];
+        appendLog({ type: 'cmd', content: `$ clean project (deleting: ${filesToClean.join(', ')})` });
+        try {
+            await invoke('clean_project', { paths: filesToClean });
+            appendLog({ type: 'success', content: 'Clean project successful.' });
+        } catch (error) {
+            appendLog({ type: 'error', content: `Failed to clean project: ${error}` });
+        }
     };
 
     return (
@@ -105,6 +117,7 @@ const ControlPanel: React.FC<ControlPanelProps> = ({ verilogFiles }) => {
                 <button onClick={handleCompile}>Compile</button>
                 <button onClick={handleSimulate}>Simulate</button>
                 <button onClick={handleViewWave}>View Wave</button>
+                <button onClick={handleCleanProject} className="btn-danger">Clean Project</button>
             </div>
             <div className="output-log" ref={logRef}>
                 {log.map((entry, index) => {

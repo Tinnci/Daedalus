@@ -6,26 +6,42 @@ import ControlPanel from './ControlPanel';
 
 interface SideBarProps {
   onFileOpen: (filePath: string, content: string) => void;
+  verilogFiles: string[];
+  setVerilogFiles: React.Dispatch<React.SetStateAction<string[]>>;
+  iverilogFlags: string;
+  setIverilogFlags: React.Dispatch<React.SetStateAction<string>>;
+  vvpPath: string;
+  setVvpPath: React.Dispatch<React.SetStateAction<string>>;
+  vcdPath: string;
+  setVcdPath: React.Dispatch<React.SetStateAction<string>>;
 }
 
-const SideBar: React.FC<SideBarProps> = ({ onFileOpen }) => {
-  const [verilogFiles, setVerilogFiles] = useState<string[]>([]);
+const SideBar: React.FC<SideBarProps> = ({
+  onFileOpen,
+  verilogFiles,
+  setVerilogFiles,
+  iverilogFlags,
+  setIverilogFlags,
+  vvpPath,
+  setVvpPath,
+  vcdPath,
+  setVcdPath
+}) => {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
   const addVerilogFiles = async () => {
     try {
       const selected = await openDialog({
         multiple: true,
-        filters: [{
-          name: 'Verilog',
-          extensions: ['v', 'sv']
-        }]
+        filters: [{ name: 'Verilog', extensions: ['v', 'sv'] }]
       });
 
       if (selected) {
         const paths = Array.isArray(selected) ? selected : [selected];
-        const newFiles = paths.filter(file => !verilogFiles.includes(file));
-        setVerilogFiles(prevFiles => [...prevFiles, ...newFiles]);
+        setVerilogFiles(prevFiles => {
+          const newFiles = paths.filter(file => !prevFiles.includes(file));
+          return [...prevFiles, ...newFiles];
+        });
       }
     } catch (error) {
       console.error("Error adding files:", error);
@@ -35,23 +51,15 @@ const SideBar: React.FC<SideBarProps> = ({ onFileOpen }) => {
   const removeVerilogFiles = () => {
     if (selectedFile) {
       setVerilogFiles(prevFiles => prevFiles.filter(file => file !== selectedFile));
-      setSelectedFile(null); // Deselect after removal
+      setSelectedFile(null);
     }
   };
 
   const moveFile = (direction: 'up' | 'down') => {
     if (!selectedFile) return;
-
     const currentIndex = verilogFiles.indexOf(selectedFile);
     if (currentIndex === -1) return;
-
-    let newIndex = currentIndex;
-    if (direction === 'up') {
-      newIndex = Math.max(0, currentIndex - 1);
-    } else {
-      newIndex = Math.min(verilogFiles.length - 1, currentIndex + 1);
-    }
-
+    const newIndex = direction === 'up' ? Math.max(0, currentIndex - 1) : Math.min(verilogFiles.length - 1, currentIndex + 1);
     if (newIndex !== currentIndex) {
       const newFiles = [...verilogFiles];
       const [removed] = newFiles.splice(currentIndex, 1);
@@ -66,7 +74,6 @@ const SideBar: React.FC<SideBarProps> = ({ onFileOpen }) => {
       onFileOpen(filePath, content);
     } catch (error) {
       console.error("Error reading file:", error);
-      // You might want to show a user-friendly error message here
     }
   };
 
@@ -87,7 +94,7 @@ const SideBar: React.FC<SideBarProps> = ({ onFileOpen }) => {
                   onClick={() => setSelectedFile(file)}
                   onDoubleClick={() => handleFileDoubleClick(file)}
                 >
-                  {file.split(/[\\/]/).pop()} {/* Display basename */}
+                  {file.split(/[\\/]/).pop()}
                 </li>
               ))}
             </ul>
@@ -100,7 +107,15 @@ const SideBar: React.FC<SideBarProps> = ({ onFileOpen }) => {
           <button onClick={() => moveFile('down')} disabled={!selectedFile || verilogFiles.indexOf(selectedFile) === verilogFiles.length - 1}>Move Down</button>
         </div>
       </div>
-      <ControlPanel verilogFiles={verilogFiles} />
+      <ControlPanel
+        verilogFiles={verilogFiles}
+        iverilogFlags={iverilogFlags}
+        setIverilogFlags={setIverilogFlags}
+        vvpPath={vvpPath}
+        setVvpPath={setVvpPath}
+        vcdPath={vcdPath}
+        setVcdPath={setVcdPath}
+      />
     </div>
   );
 };

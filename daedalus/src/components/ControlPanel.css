@@ -52,6 +52,15 @@
     background-color: #4a4a4a;
 }
 
+.button-group button.btn-danger {
+    background-color: #9b2c2c;
+    border-color: #c53030;
+}
+
+.button-group button.btn-danger:hover:not(:disabled) {
+    background-color: #c53030;
+}
+
 .output-log {
     margin-top: 10px;
     background-color: #1e1e1e;
