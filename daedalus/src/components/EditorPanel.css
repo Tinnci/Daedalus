@@ -1,0 +1,5 @@
+.editor-panel {
+    flex: 1 1 auto; /* Grow to fill available space */
+    height: 100%;
+    overflow: hidden; /* Monaco handles its own scrolling */
+} 
